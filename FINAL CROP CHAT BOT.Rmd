@@ -1,0 +1,597 @@
+---
+title: "final crop prediction"
+author: "21MIA1124"
+date: "17/11/2024"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+# Load necessary libraries 
+library(dplyr)
+library(caret)
+library(randomForest)
+library(tidyverse)
+library(ggplot2)
+library(shiny)
+library(stringr)
+library(e1071) # For SVM
+library(Metrics) # For MAPE
+
+# Load the datasets (Ensure the paths are correct for all datasets)
+crop_recommendation_data <- read.csv("C:\\Users\\Narthana\\Downloads\\Crop Recommendation dataset.csv")
+crop_prediction_data <- read.csv("C:\\Users\\Narthana\\Downloads\\Crop Prediction dataset.csv")
+balram_data <- read.csv("C:\\Users\\Narthana\\Downloads\\balaram (2).csv")
+
+# Data Preprocessing
+crop_recommendation_data$label <- as.factor(crop_recommendation_data$label)
+
+# Clean the data: Trim extra spaces from Season and District_Name columns
+crop_prediction_data$Season <- str_trim(crop_prediction_data$Season)
+crop_prediction_data$District_Name <- str_trim(crop_prediction_data$District_Name)
+
+# Handle missing production values
+crop_prediction_data <- crop_prediction_data %>%
+  mutate(Production = ifelse(is.na(Production), 0, Production))
+
+# Build the Random Forest model for crop recommendation
+set.seed(123)
+recommendation_model <- randomForest(label ~ ., data = crop_recommendation_data, ntree = 100)
+
+# Build the Random Forest model for crop yield prediction
+set.seed(123)
+trainIndex <- createDataPartition(crop_prediction_data$Production, p = 0.8, list = FALSE, times = 1)
+train_data <- crop_prediction_data[trainIndex, ]
+test_data <- crop_prediction_data[-trainIndex, ]
+prediction_model_rf <- randomForest(Production ~ Temperature + Humidity + Soil_Moisture + Area + Crop, 
+                                    data = train_data, ntree = 100)
+
+# Build the Linear Regression model for crop yield prediction
+prediction_model_lr <- lm(Production ~ Temperature + Humidity + Soil_Moisture + Area + Crop, 
+                          data = train_data)
+
+# Build the SVM model for crop yield prediction
+prediction_model_svm <- svm(Production ~ Temperature + Humidity + Soil_Moisture + Area + Crop, 
+                            data = train_data)
+
+# Function to predict crop yield and calculate metrics
+predict_yield <- function(temp, humidity, soil_moisture, area, crop) {
+  new_data <- data.frame(Temperature = as.numeric(temp), 
+                         Humidity = as.numeric(humidity), 
+                         Soil_Moisture = as.numeric(soil_moisture), 
+                         Area = as.numeric(area), 
+                         Crop = crop)
+  
+  # Random Forest prediction
+  prediction_rf <- predict(prediction_model_rf, new_data)
+  test_predictions_rf <- predict(prediction_model_rf, test_data)
+  r2_rf <- cor(test_data$Production, test_predictions_rf)^2
+  rmse_rf <- sqrt(mean((test_data$Production - test_predictions_rf)^2))
+  mape_rf <- mean(abs((test_data$Production - test_predictions_rf) / test_data$Production)) * 100
+  
+  # Linear Regression prediction
+  prediction_lr <- predict(prediction_model_lr, new_data)
+  test_predictions_lr <- predict(prediction_model_lr, test_data)
+  r2_lr <- cor(test_data$Production, test_predictions_lr)^2
+  rmse_lr <- sqrt(mean((test_data$Production - test_predictions_lr)^2))
+  mape_lr <- mean(abs((test_data$Production - test_predictions_lr) / test_data$Production)) * 100
+  
+  # SVM prediction
+  prediction_svm <- predict(prediction_model_svm, new_data)
+  test_predictions_svm <- predict(prediction_model_svm, test_data)
+  r2_svm <- cor(test_data$Production, test_predictions_svm)^2
+  rmse_svm <- sqrt(mean((test_data$Production - test_predictions_svm)^2))
+  mape_svm <- mean(abs((test_data$Production - test_predictions_svm) / test_data$Production)) * 100
+  
+  return(list(
+    prediction_rf = prediction_rf, r2_rf = r2_rf, rmse_rf = rmse_rf, mape_rf = mape_rf,
+    prediction_lr = prediction_lr, r2_lr = r2_lr, rmse_lr = rmse_lr, mape_lr = mape_lr,
+    prediction_svm = prediction_svm, r2_svm = r2_svm, rmse_svm = rmse_svm, mape_svm = mape_svm
+  ))
+}
+
+# Function to recommend crops
+recommend_crops <- function(temperature, humidity, rainfall, ph, n = NA, p = NA, k = NA) {
+  new_data <- data.frame(
+    N = ifelse(is.na(n), mean(crop_recommendation_data$N, na.rm = TRUE), n),
+    P = ifelse(is.na(p), mean(crop_recommendation_data$P, na.rm = TRUE), p),
+    K = ifelse(is.na(k), mean(crop_recommendation_data$K, na.rm = TRUE), k),
+    temperature = temperature,
+    humidity = humidity,
+    rainfall = rainfall,
+    ph = ph
+  )
+  predictions <- predict(recommendation_model, new_data, type = "prob")
+  pred_probs <- predictions[1, ]
+  sorted_probs <- sort(pred_probs, decreasing = TRUE)
+  top_crops <- names(sorted_probs)[1:min(3, length(sorted_probs))]
+  top_probs <- sorted_probs[1:min(3, length(sorted_probs))]
+  
+  return(list(crops = top_crops, probabilities = top_probs))
+}
+
+# Define the chatbot function
+chatbot <- function() {
+  cat("🌾 Welcome to the Crop Prediction and Recommendation Chatbot! 🌿\n")
+  
+  # Start chat loop
+  while (TRUE) {
+    input <- tolower(readline("✨ How can I assist you today? (type 'quit' to exit): "))
+    
+    if (input == "quit") {
+      cat("Thank you for using the chatbot! Goodbye! 👋😊\n")
+      break
+    }
+    
+    # Check for yield prediction
+    else if (any(str_detect(input, c("predict yield", "crop yield", "yield estimation", "production prediction", "estimate yield", "yield forecast", "yield calculator", "crop yield forecast", "how much yield", "expected yield", "yield analysis", "yield prediction", "yield estimates", "forecast yield", "yield output")))) {
+      cat("📊 Great choice! Let's predict the yield for your crop! 🌽\n")
+      temp <- readline("Enter the temperature (°C): ")
+      humidity <- readline("Enter the humidity (%): ")
+      soil_moisture <- readline("What is the soil moisture level (%): ")
+      area <- readline("How many hectares is your area? ")
+      crop <- readline("What crop are you interested in? ")
+      
+      yield <- predict_yield(temp, humidity, soil_moisture, area, crop)
+      
+      cat("🚀 Random Forest prediction: ", yield$prediction_rf, "tons per hectare! 🎉\n")
+      cat("Random Forest R²: ", yield$r2_rf, "\n")
+      cat("Random Forest RMSE: ", yield$rmse_rf, "\n")
+      cat("Random Forest MAPE: ", yield$mape_rf, "%\n\n")
+      
+      cat("🚀 Linear Regression prediction: ", yield$prediction_lr, "tons per hectare! 🎉\n")
+      cat("Linear Regression R²: ", yield$r2_lr, "\n")
+      cat("Linear Regression RMSE: ", yield$rmse_lr, "\n")
+      cat("Linear Regression MAPE: ", yield$mape_lr, "%\n\n")
+      
+      cat("🚀 SVM prediction: ", yield$prediction_svm, "tons per hectare! 🎉\n")
+      cat("SVM R²: ", yield$r2_svm, "\n")
+      cat("SVM RMSE: ", yield$rmse_svm, "\n")
+      cat("SVM MAPE: ", yield$mape_svm, "%\n\n")
+    }
+  }
+}
+
+# Start the chatbot
+chatbot()
+```
+
+```{r}
+# Load necessary libraries 
+library(dplyr)
+library(caret)
+library(randomForest)
+library(tidyverse)
+library(ggplot2)
+library(shiny)
+library(stringr)
+
+# Load the datasets (Ensure the paths are correct for all datasets)
+crop_recommendation_data <- read.csv("C:\\Users\\Narthana\\Downloads\\Crop Recommendation dataset.csv")
+crop_prediction_data <- read.csv("C:\\Users\\Narthana\\Downloads\\Crop Prediction dataset.csv")
+balram_data <- read.csv("C:\\Users\\Narthana\\Downloads\\balaram (2).csv")
+
+# Data Preprocessing
+crop_recommendation_data$label <- as.factor(crop_recommendation_data$label)
+
+# Clean the data: Trim extra spaces from Season and District_Name columns
+crop_prediction_data$Season <- str_trim(crop_prediction_data$Season)
+crop_prediction_data$District_Name <- str_trim(crop_prediction_data$District_Name)
+
+# Handle missing production values
+crop_prediction_data <- crop_prediction_data %>%
+  mutate(Production = ifelse(is.na(Production), 0, Production))
+
+# Build the Random Forest model for crop recommendation
+set.seed(123)
+recommendation_model <- randomForest(label ~ ., data = crop_recommendation_data, ntree = 100)
+
+# Build the Random Forest model for crop yield prediction
+set.seed(123)
+trainIndex <- createDataPartition(crop_prediction_data$Production, p = 0.8, list = FALSE, times = 1)
+train_data <- crop_prediction_data[trainIndex, ]
+test_data <- crop_prediction_data[-trainIndex, ]
+prediction_model <- randomForest(Production ~ Temperature + Humidity + Soil_Moisture + Area + Crop, 
+                                 data = train_data, ntree = 100)
+
+# Define chatbot functions
+
+# Function to recommend crops
+recommend_crops <- function(temperature, humidity, rainfall, ph, n = NA, p = NA, k = NA) {
+  new_data <- data.frame(
+    N = ifelse(is.na(n), mean(crop_recommendation_data$N, na.rm = TRUE), n),
+    P = ifelse(is.na(p), mean(crop_recommendation_data$P, na.rm = TRUE), p),
+    K = ifelse(is.na(k), mean(crop_recommendation_data$K, na.rm = TRUE), k),
+    temperature = temperature,
+    humidity = humidity,
+    rainfall = rainfall,
+    ph = ph
+  )
+  predictions <- predict(recommendation_model, new_data, type = "prob")
+  pred_probs <- predictions[1, ]
+  sorted_probs <- sort(pred_probs, decreasing = TRUE)
+  top_crops <- names(sorted_probs)[1:min(3, length(sorted_probs))]
+  top_probs <- sorted_probs[1:min(3, length(sorted_probs))]
+  
+  return(list(crops = top_crops, probabilities = top_probs))
+}
+
+# Function to predict crop yield
+predict_yield <- function(temp, humidity, soil_moisture, area, crop) {
+  new_data <- data.frame(Temperature = as.numeric(temp), 
+                         Humidity = as.numeric(humidity), 
+                         Soil_Moisture = as.numeric(soil_moisture), 
+                         Area = as.numeric(area), 
+                         Crop = crop)
+  prediction <- predict(prediction_model, new_data)
+  test_predictions <- predict(prediction_model, test_data)
+  r2 <- cor(test_data$Production, test_predictions)^2
+  rmse <- sqrt(mean((test_data$Production - test_predictions)^2))
+  
+  return(list(prediction = prediction, r2 = r2, rmse = rmse))
+}
+
+# Function to forecast best crop for season and region
+predict_best_crop <- function(season, region) {
+  best_crop <- crop_prediction_data %>% 
+    filter(Season == season, District_Name == region) %>% 
+    group_by(Crop) %>% 
+    summarise(avg_production = mean(Production, na.rm = TRUE)) %>% 
+    arrange(desc(avg_production)) %>% 
+    slice(1)
+  
+  return(best_crop)
+}
+
+# Function to calculate production efficiency
+calculate_efficiency <- function() {
+  efficiency <- crop_prediction_data %>% 
+    group_by(Crop) %>% 
+    summarise(avg_efficiency = mean(Production / Area, na.rm = TRUE))
+  return(efficiency)
+}
+
+# Function to impute missing production values
+impute_missing_production <- function(data) {
+  data$Production[is.na(data$Production)] <- mean(data$Production, na.rm = TRUE)
+  return(data)
+}
+
+# Function to recommend fertilizer and pesticide
+recommend_fertilizer_pesticide <- function(crop_name, seed_name) {
+  recommendation <- balram_data %>%
+    filter(crop_name == crop_name & seed_name == seed_name) %>%
+    select(fertilizer, pesticide) %>%
+    unique()
+  
+  if (nrow(recommendation) == 0) {
+    available_seeds <- balram_data %>%
+      filter(crop_name == crop_name) %>%
+      pull(seed_name) %>%
+      unique()
+    return(list(message = paste("Sorry, I don't have any details about the seed name '", seed_name, "' 😞. Here are the available seeds for '", crop_name, "': ", paste(available_seeds, collapse = ", "), ". Please choose from the available options or go back to recommendations.", sep = ""), recommendation = NULL))
+  }
+  
+  return(recommendation)
+}
+
+# Function to retrieve crop details
+crop_details <- function(crop_name, seed_name) {
+  details <- balram_data %>%
+    filter(crop_name == crop_name & seed_name == seed_name) %>%
+    select(seed_rate, avg_yeild, location, special_feature) %>%
+    unique()
+  
+  if (nrow(details) == 0) {
+    available_seeds <- balram_data %>%
+      filter(crop_name == crop_name) %>%
+      pull(seed_name) %>%
+      unique()
+    return(list(message = paste("Sorry, I don't have any details about the seed name '", seed_name, "' 😞. Here are the available seeds for '", crop_name, "': ", paste(available_seeds, collapse = ", "), ". Please choose from the available options or go back to recommendations.", sep = ""), details = NULL))
+  }
+  
+  return(details)
+}
+
+# Define keywords for each option
+recommendation_keywords <- c("recommend crop", "suggest crop", "crop recommendation", "which crop", "best crop for", "what crop to grow", "crop choice", "help with crops", "crop advice", "crop options", "top crop", "what to plant", "crop suggestions", "help me choose", "crops to grow")
+yield_prediction_keywords <- c("predict yield", "crop yield", "yield estimation", "production prediction", "estimate yield", "yield forecast", "yield calculator", "crop yield forecast", "how much yield", "expected yield", "yield analysis", "yield prediction", "yield estimates", "forecast yield", "yield output")
+best_crop_keywords <- c("seasonal yield", "best crop for season", "crop for region", "region best crop", "season crop recommendation", "top crop", "crop suggestion for season", "ideal crop for region", "what to plant this season", "crop choice for region", "best crops in season", "crop choices", "recommended crop for season", "seasonal crop options", "crop choices for this season")
+efficiency_keywords <- c("production efficiency", "yield efficiency", "efficiency calculation", "crop efficiency", "production per area", "efficiency analysis", "how efficient is my crop", "efficiency of crops", "crop productivity", "yield per area", "efficiency measures", "crop production efficiency", "calculate efficiency", "analysis of efficiency", "crop yield efficiency")
+impute_keywords <- c("impute missing", "missing production", "handle missing", "fill missing values", "missing production data", "fill na", "data imputation", "fill missing production", "handle na values", "missing data handling", "impute values", "fill gaps in data", "data completion", "complete missing data", "production data imputation")
+fertilizer_pesticide_keywords <- c("recommend fertilizer", "recommend pesticide", "fertilizer for crop", "pesticide for crop", "suggest pesticide", "suggest fertilizer", "best fertilizer", "best pesticide", "fertilizer recommendation", "pesticide recommendation", "what fertilizer to use", "what pesticide to use", "fertilizer options", "pesticide options", "crop treatment recommendations")
+crop_details_keywords <- c("crop details", "details of crop", "seed information", "crop info", "seed details", "information on crop", "what about this crop", "crop characteristics", "crop specifics", "info on crop", "features of crop", "crop varieties", "details about crop", "crop facts", "crop specifics")
+
+# Define the chatbot function
+chatbot <- function() {
+  cat("🌾 Welcome to the Crop Prediction and Recommendation Chatbot! 🌿\n")
+  
+  # Start chat loop
+  while (TRUE) {
+    input <- tolower(readline("✨ How can I assist you today? (type 'quit' to exit): "))
+    
+    if (input == "quit") {
+      cat("Thank you for using the chatbot! Goodbye! 👋😊\n")
+      break
+    }
+    
+    # Check for crop recommendation
+    if (any(str_detect(input, recommendation_keywords))) {
+      cat("🌱 Awesome! Let's find the best crops for your conditions! 🌞\n")
+      temperature <- as.numeric(readline("Please enter the current temperature (°C): "))
+      humidity <- as.numeric(readline("And the current humidity (%): "))
+      rainfall <- as.numeric(readline("How much rainfall do we have (mm)? "))
+      ph <- as.numeric(readline("What's the pH level of your soil? "))
+      
+      crops <- recommend_crops(temperature, humidity, rainfall, ph)
+      cat("🎉 Based on your input, I recommend the following crops:\n")
+      for (i in 1:length(crops$crops)) {
+        cat(paste0(i, ". ", crops$crops[i], " with a probability of ", round(crops$probabilities[i] * 100, 2), "%! 🌾\n"))
+      }
+      cat("\n")
+    }
+    
+    # Check for yield prediction
+    else if (any(str_detect(input, yield_prediction_keywords))) {
+      cat("📊 Great choice! Let's predict the yield for your crop! 🌽\n")
+      temp <- readline("Enter the temperature (°C): ")
+      humidity <- readline("Enter the humidity (%): ")
+      soil_moisture <- readline("What is the soil moisture level (%): ")
+      area <- readline("How many hectares is your area? ")
+      crop <- readline("What crop are you interested in? ")
+      
+      yield <- predict_yield(temp, humidity, soil_moisture, area, crop)
+      cat("🚀 The predicted yield is:", yield$prediction, "tons per hectare! 🎉\n")
+      cat("R² value:", yield$r2, "\n")
+      cat("RMSE value:", yield$rmse, "\n\n")
+    }
+    
+    # Check for best crop recommendation for season and region
+    else if (any(str_detect(input, best_crop_keywords))) {
+      cat("🌼 Let's find the best crop for this season and region! 🌍\n")
+      season <- readline("What's the current season? (Kharif, Rabi, Zaid): ")
+      region <- readline("And which region are you in? ")
+      
+      best_crop <- predict_best_crop(season, region)
+      cat("🥇 The best crop for the season", season, "in the region", region, "is:", best_crop$Crop, 
+          "with an average production of:", best_crop$avg_production, "tons! 🌟\n\n")
+    }
+    
+    # Check for production efficiency
+    else if (any(str_detect(input, efficiency_keywords))) {
+      cat("📈 Let's check the average production efficiency of different crops! 🌾\n")
+      efficiency <- calculate_efficiency()
+      cat("Here is the average production efficiency of each crop:\n")
+      print(efficiency)
+      cat("\n")
+    }
+    
+    # Check for imputation of missing values
+    else if (any(str_detect(input, impute_keywords))) {
+      cat("🔄 Let's fill in those missing values for better predictions! 🛠️\n")
+      crop_prediction_data <- impute_missing_production(crop_prediction_data)
+      cat("✨ Missing production values have been successfully imputed! 🌟\n\n")
+    }
+    
+    # Check for fertilizer and pesticide recommendation
+    else if (any(str_detect(input, fertilizer_pesticide_keywords))) {
+      cat("🌱 Ready to boost your crops? Let's find the right fertilizers and pesticides! 🌿\n")
+      crop_name <- readline("What's the crop name? ")
+      seed_name <- readline("And the seed name? ")
+      
+      recommendation <- recommend_fertilizer_pesticide(crop_name, seed_name)
+      if (!is.null(recommendation$fertilizer)) {
+        cat("✅ Recommended Fertilizer:", recommendation$fertilizer, "\n")
+        cat("✅ Recommended Pesticide:", recommendation$pesticide, "\n\n")
+      } else {
+        cat("❌ Sorry! ", recommendation$message, "\n\n")
+      }
+    }
+    
+    # Check for crop details
+    else if (any(str_detect(input, crop_details_keywords))) {
+      cat("🔍 Let’s find out more about your chosen crop! 🌾\n")
+      crop_name <- readline("What is the crop name? ")
+      seed_name <- readline("And the seed name? ")
+      
+      details <- crop_details(crop_name, seed_name)
+      if (!is.null(details)) {
+        cat("📋 Seed Rate:", details$seed_rate, "\n")
+        cat("📈 Average Yield:", details$avg_yield, "\n")
+        cat("📍 Location:", details$location, "\n")
+        cat("🌟 Special Feature:", details$special_feature, "\n\n")
+      } else {
+        cat("❌ Sorry! ", details$message, "\n\n")
+      }
+    }
+    
+    else {
+      cat("😕 I'm sorry, I didn't quite catch that. Please ask something related to crop recommendation, yield prediction, or any other agricultural queries. I'm here to help! 🌻\n\n")
+    }
+  }
+}
+
+# Run the chatbot
+chatbot()
+```
+```{r}
+# Load the datasets
+crop_recommendation_data <- read.csv("C:\\Users\\Narthana\\Downloads\\Crop Recommendation dataset.csv")
+crop_prediction_data <- read.csv("C:\\Users\\Narthana\\Downloads\\Crop Prediction dataset.csv")
+balram_data <- read.csv("C:\\Users\\Narthana\\Downloads\\balaram (2).csv")
+
+```
+```{r}
+# Get the number of records in each dataset
+record_counts <- data.frame(
+  Dataset = c("Crop Recommendation", "Crop Prediction", "Balram"),
+  Records = c(nrow(crop_recommendation_data), nrow(crop_prediction_data), nrow(balram_data))
+)
+
+# Print the record counts
+print(record_counts)
+```
+```{r}
+library(ggplot2)
+
+# Create a data frame with dataset names and record counts
+record_counts <- data.frame(
+  Dataset = c("Crop Recommendation", "Crop Prediction", "Balram"),
+  Records = c(nrow(crop_recommendation_data), nrow(crop_prediction_data), nrow(balram_data))
+)
+
+# Plot total records
+ggplot(record_counts, aes(x = Dataset, y = Records, fill = Dataset)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Total Records in Each Dataset", x = "Dataset", y = "Number of Records")
+
+```
+```{r}
+# Extract unique crop names from relevant datasets
+unique_crops <- unique(c(crop_recommendation_data$label, crop_prediction_data$Crop, balram_data$crop_name))
+
+# Create a data frame for visualization
+unique_crops_df <- data.frame(Crop = unique_crops)
+
+# Visualize unique crops
+ggplot(unique_crops_df, aes(x = reorder(Crop, -table(Crop)), fill = Crop)) +
+  geom_bar() +
+  theme_minimal() +
+  labs(title = "Unique Crop Names", x = "Crop Name", y = "Frequency") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+```{r}
+# Ensure that 'crop_name' and 'seed_name' are character vectors
+balram_data$crop_name <- as.character(balram_data$crop_name)
+balram_data$seed_name <- as.character(balram_data$seed_name)
+
+# Get unique seed names for each crop
+unique_seeds_per_crop <- aggregate(seed_name ~ crop_name, data = balram_data, FUN = function(x) paste(unique(x), collapse = ", "))
+
+# Print the result
+print(unique_seeds_per_crop)
+```
+```{r}
+# Crop Recommendation Dataset
+
+summary(crop_recommendation_data)
+```
+```{r}
+colSums(is.na(crop_recommendation_data))
+```
+```{r}
+library(ggplot2)
+library(reshape2)
+corr_matrix <- cor(crop_recommendation_data[, -ncol(crop_recommendation_data)]) # Exclude the label column
+melted_corr <- melt(corr_matrix)
+ggplot(data = melted_corr, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() + 
+  scale_fill_gradient2(low="blue", high="red", mid="white", midpoint=0) +
+  theme_minimal() + 
+  labs(title="Correlation Heatmap", x="Features", y="Features")
+```
+```{r}
+ggplot(crop_recommendation_data, aes(x=label)) + 
+  geom_bar(fill="skyblue") + 
+  theme(axis.text.x = element_text(angle=45, hjust=1)) +
+  labs(title="Distribution of Recommended Crops", x="Crop Type", y="Count")
+
+```
+```{r}
+ggplot(crop_recommendation_data, aes(x=label, y=rainfall, color=label)) + 
+  geom_jitter(width=0.2, alpha=0.6, size=2) + 
+  theme(axis.text.x = element_text(angle=45, hjust=1)) + 
+  labs(title="Rainfall vs. Crop Type", x="Crop Type", y="Rainfall (mm)") + 
+  scale_color_discrete(name="Crop Type") + 
+  theme_minimal()
+```
+```{r}
+ggplot(crop_recommendation_data, aes(x=label, y=temperature, color=label)) + 
+  geom_jitter(width=0.2, alpha=0.6, size=2) + 
+  theme(axis.text.x = element_text(angle=45, hjust=1)) + 
+  labs(title="Temperature vs. Crop Type", x="Crop Type", y="Temperature (°C)") + 
+  scale_color_discrete(name="Crop Type") + 
+  theme_minimal()
+```
+```{r}
+ggplot(crop_recommendation_data, aes(x=label, y=humidity, color=label)) + 
+  geom_jitter(width=0.2, alpha=0.6, size=2) + 
+  theme(axis.text.x = element_text(angle=45, hjust=1)) + 
+  labs(title="Humidity vs. Crop Type", x="Crop Type", y="Humidity (%)") + 
+  scale_color_discrete(name="Crop Type") + 
+  theme_minimal()
+```
+```{r}
+ggplot(crop_recommendation_data, aes(x=label, y=ph, color=label)) + 
+  geom_jitter(width=0.2, alpha=0.6, size=2) + 
+  theme(axis.text.x = element_text(angle=45, hjust=1)) + 
+  labs(title="pH Level vs. Crop Type", x="Crop Type", y="pH Level") + 
+  scale_color_discrete(name="Crop Type") + 
+  theme_minimal()
+```
+```{r}
+ # Prediction Dataset
+summary(crop_prediction_data)
+```
+```{r}
+
+colSums(is.na(crop_prediction_data))
+
+```
+```{r}
+crop_prediction_data <- na.omit(crop_prediction_data)
+```
+
+```{r}
+ggplot(crop_prediction_data, aes(x=Crop_Year, y=Production, color=Crop)) + 
+  geom_line() + 
+  labs(title="Crop Production Over the Years", x="Year", y="Production (in tons)") +
+  theme_minimal()
+```
+```{r}
+library(dplyr)
+top_crops <- crop_prediction_data %>%
+  group_by(Crop) %>%
+  summarise(Total_Area = sum(Area)) %>%
+  arrange(desc(Total_Area)) %>%
+  head(5)
+
+ggplot(top_crops, aes(x=reorder(Crop, -Total_Area), y=Total_Area)) + 
+  geom_bar(stat="identity", fill="green") +
+  labs(title="Top 5 Crops by Area", x="Crop", y="Total Area") +
+  theme(axis.text.x = element_text(angle=45, hjust=1))
+```
+```{r}
+ggplot(crop_prediction_data, aes(x=Area, y=Production, color=Season)) + 
+  geom_point(alpha=0.7) +
+  labs(title="Production vs Area for Different Seasons", x="Area (in hectares)", y="Production (in tons)") +
+  theme_minimal()
+
+```
+```{r}
+#Balram Dataset
+summary(balram_data)
+```
+```{r}
+colSums(is.na(balram_data))
+
+```
+
+```{r}
+balram_data <- na.omit(balram_data)
+```
+
+
