@@ -1,1 +1,1 @@
-# grated-Crop-Yield-Recommendation-and-Prediction-System-
+# integrated-Crop-Yield-Recommendation-and-Prediction-System-
